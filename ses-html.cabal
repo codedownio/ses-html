@@ -28,7 +28,7 @@ library
                      , http-streams
                      , HsOpenSSL
                      , tagsoup
-                     , time == 1.5.*
+                     , time
 
 source-repository head
    type: git
