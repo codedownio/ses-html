@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SES
-    ( -- * Email creation 
+    ( -- * Email creation
       sendEmailBlaze
     , sendEmail
       -- * Types
@@ -17,16 +17,17 @@ module Network.SES
     , SESErrorMessage
     ) where
 
+import           Control.Exception             ( try, SomeException )
 import           Crypto.Hash                   ( Digest, SHA256
                                                , hmac, hmacGetDigest
                                                )
-import           Data.Byteable                 ( toBytes )
 import           Data.ByteString               (ByteString)
+import           Data.ByteString.Base64        ( encode )
 import           Data.ByteString.Char8         ( pack, unpack, concat )
 import qualified Data.ByteString.Lazy          as L
-import           Data.ByteString.Base64        ( encode )
-import           Data.Monoid                   ( (<>) )
+import           Data.Byteable                 ( toBytes )
 import           Data.Maybe                    ( fromMaybe )
+import           Data.Monoid                   ( (<>) )
 import           Data.Time.Clock               ( getCurrentTime )
 import           Data.Time.Format              ( formatTime, defaultTimeLocale )
 import           Network.Http.Client           ( buildRequest, http, Method(POST), setContentType
@@ -39,9 +40,8 @@ import           OpenSSL                       ( withOpenSSL )
 import           Prelude                hiding ( concat )
 import           Text.Blaze.Html.Renderer.Utf8 ( renderHtml )
 import           Text.Blaze.Html5              ( Html )
-import           Text.Read                     ( readMaybe )
-import           Control.Exception             ( try, SomeException )
 import           Text.HTML.TagSoup             ( parseTags, Tag(..) )
+import           Text.Read                     ( readMaybe )
 
 ------------------------------------------------------------------------------
 -- | Types for Email creation
@@ -98,7 +98,7 @@ sendEmailBlaze
     -> Subject   -- ^ The Subject of the Email
     -> Html      -- ^ The Html of the email body
     -> IO SESResult
-sendEmailBlaze 
+sendEmailBlaze
     publicKey
     secretKey
     region
@@ -116,27 +116,27 @@ sendEmail
     -> From         -- ^ The Email sender
     -> To           -- ^ The Email recipient
     -> Subject      -- ^ The Subject of the Email
-    -> L.ByteString -- ^ Raw Html 
+    -> L.ByteString -- ^ Raw Html
     -> IO SESResult
-sendEmail = makeRequest 
+sendEmail = makeRequest
 
 ------------------------------------------------------------------------------
 -- | Types to hold SES Errors
 type SESErrorCode    = Int        -- ^ Error Code returned from SES XML response
 type SESErrorMessage = ByteString -- ^ Error Message returned from SES Message
-data SESError = 
+data SESError =
           -- | Connection Error, can occur on open & close or on send & receive of a Request or Response
-          SESConnectionError ByteString    
+          SESConnectionError ByteString
           -- | If a request is made successfully but the parameters specifed were incorrect
-        | SESError SESErrorCode SESErrorType SESErrorMessage 
+        | SESError SESErrorCode SESErrorType SESErrorMessage
           deriving (Show)
 
 ------------------------------------------------------------------------------
--- | Common Error Types for SES 
--- 
+-- | Common Error Types for SES
+--
 -- <http://s3.amazonaws.com/awsdocs/ses/latest/ses-api.pdf>
 --
-data SESErrorType = 
+data SESErrorType =
           IncompleteSignature
         | InternalFailure
         | InvalidAction
@@ -160,16 +160,16 @@ data SESErrorType =
 
 ------------------------------------------------------------------------------
 -- | SES Request Dispatcher
-makeRequest 
+makeRequest
     :: PublicKey    -- ^ AWS Public Key
     -> SecretKey    -- ^ AWS Secret Key
     -> Region       -- ^ The Region to send the Request
     -> From         -- ^ The Email sender
     -> To           -- ^ The Email recipient
     -> Subject      -- ^ The Subject of the Email
-    -> L.ByteString -- ^ Raw Html 
+    -> L.ByteString -- ^ Raw Html
     -> IO SESResult
-makeRequest 
+makeRequest
     (PublicKey publicKey)
     (SecretKey secretKey)
     region
@@ -200,33 +200,33 @@ makeRequest
           setHeader "X-Amzn-Authorization" auth
           setHeader "Date" date
   ctx <- baselineContextSSL
-  let 
+  let
   connResult <- try (openConnectionSSL ctx ("email." <> pack (show region) <> ".amazonaws.com") 443)
          :: ConnectionError Connection
   case connResult of
     Left s -> connectionError s
     Right con -> do
       result <- try (sendRequest con req $ encodedFormBody queryString) :: ConnectionError ()
-      case result of
+      ret <- case result of
         Left s -> connectionError s
-        Right _ -> do
-           receiveResponse con $ \resp is -> 
-               do closeConnection con
-                  if getStatusCode resp == 200 
-                    then returnSuccess
-                    else do bs <- concatHandler resp is
-                            let tags = parseTags bs 
-                                code = let c = getFromTagSoup "Code" tags
-                                       in fromMaybe UnknownErrorType (readMaybe (unpack c) :: Maybe SESErrorType)
-                                sesMsg  = getFromTagSoup "Message" tags
-                            return $ Error $ SESError (getStatusCode resp) code sesMsg
+        Right _ -> receiveResponse con $ \resp is -> do
+          if getStatusCode resp == 200 then return Success else parseError resp is
+      closeConnection con
+      return ret
   where
-    getFromTagSoup x tags = let [ _, TagText d] = filterFront . filterBack $ tags 
-                                filterFront = dropWhile (/=(TagOpen x [])) 
+    getFromTagSoup x tags = let [ _, TagText d] = filterFront . filterBack $ tags
+                                filterFront = dropWhile (/=(TagOpen x []))
                                 filterBack  = takeWhile (/=(TagClose x))
                             in d
     connectionError = return . Error . SESConnectionError . pack . show
-    returnSuccess   = return Success
+
+    parseError resp is = do
+      bs <- concatHandler resp is
+      let tags = parseTags bs
+          code = let c = getFromTagSoup "Code" tags
+                 in fromMaybe UnknownErrorType (readMaybe (unpack c) :: Maybe SESErrorType)
+          sesMsg  = getFromTagSoup "Message" tags
+      return $ Error $ SESError (getStatusCode resp) code sesMsg
 
 ------------------------------------------------------------------------------
 -- | Digital Signature creation
@@ -236,4 +236,3 @@ makeSig
     -> ByteString
 makeSig payload key =
     encode $ toBytes (hmacGetDigest $ hmac key payload :: Digest SHA256)
-
